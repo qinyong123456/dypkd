@@ -225,8 +225,7 @@ class VLPromptLearner(nn.Module):
             # print(f'n_cls is {self.n_cls}')
             prefix = torch.cat([prefix, self.token_prefix2], dim=0)
             suffix = torch.cat([suffix, self.token_suffix2], dim=0)
-            # Expand ctx to match the concatenated prefix and suffix dimensions
-            ctx = ctx.repeat(2, 1, 1)
+            # No need to modify ctx as prefix and suffix concatenation results in the same size as n_cls
 
         prompts = self.construct_prompts(ctx, prefix, suffix)
 
