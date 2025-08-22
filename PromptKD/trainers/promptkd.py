@@ -449,9 +449,14 @@ class PromptKD_Refined(TrainerX):
         print("Building Memory")
         # Note: The feature dimension for memory should match the teacher's text feature dimension
         teacher_feature_dim = self.model_teacher.text_encoder.text_projection.shape[1]
+        
+        # Set default values for missing configuration parameters
+        memory_size = getattr(cfg.TRAINER.PROMPTKD, 'MEMORY_SIZE', 25)
+        alpha = getattr(cfg.TRAINER.PROMPTKD, 'ALPHA', 0.2)
+        
         self.memory = Memory(clip_model, feature_dim=teacher_feature_dim, 
-                             memory_size=cfg.TRAINER.PROMPTKD.MEMORY_SIZE, 
-                             alpha=cfg.TRAINER.PROMPTKD.ALPHA)
+                             memory_size=memory_size, 
+                             alpha=alpha)
         
         if cfg.TRAINER.MODAL == "base2novel":
             model_path = './teacher_model/'+str(cfg.DATASET.NAME)+'/VLPromptLearner/model-best.pth.tar'
@@ -532,11 +537,16 @@ class PromptKD_Refined(TrainerX):
             print(f"Multiple GPUs detected (n_gpus={device_count}), use all of them!")
             self.model = nn.DataParallel(self.model)
 
-        self.temperature = cfg.TRAINER.PROMPTKD.TEMPERATURE
+        self.temperature = getattr(cfg.TRAINER.PROMPTKD, 'TEMPERATURE', 4.0)
     
     def forward_backward(self, batch):
         image, label = self.parse_batch_train(batch)
         prec = self.cfg.TRAINER.PROMPTKD.PREC
+        
+        # Define weights at the beginning for use in both AMP and non-AMP paths
+        kd_weight = getattr(self.cfg.TRAINER.PROMPTKD, 'KD_WEIGHT', 1.0)
+        local_weight = getattr(self.cfg.TRAINER.PROMPTKD, 'LOCAL_WEIGHT', 1.0)
+        mem_weight = getattr(self.cfg.TRAINER.PROMPTKD, 'MEM_WEIGHT', 0.1)
 
         with torch.no_grad():
             tea_image_features, tea_text_features, tea_logits = self.model_teacher(image)
@@ -547,8 +557,30 @@ class PromptKD_Refined(TrainerX):
         
         if prec == "amp":
             with autocast():
-                # AMP path needs to be fully implemented similar to the non-AMP path
-                loss = model(image, label)
+                image_features, logit_scale, image_fine_list, top_image_fine_list = model(image, label)
+                
+                # Use teacher's text features as the base for refinement
+                refined_text_features, loss_mem = self.memory(text_token=tea_text_features, 
+                                                              image_token=image_fine_list, 
+                                                              training=True)
+
+                # 1. Logits distillation loss (original PromptKD loss)
+                stu_logits = logit_scale * image_features @ refined_text_features.t()
+                L_kd = F.kl_div(
+                    F.log_softmax(stu_logits / self.temperature, dim=1),
+                    F.softmax(tea_logits / self.temperature, dim=1),
+                    reduction='sum',
+                ) * (self.temperature * self.temperature) / stu_logits.numel()
+
+                # 2. Local alignment loss (from TextRefiner)
+                top_local_logit = logit_scale * top_image_fine_list @ tea_text_features.t()
+                L_local = F.cross_entropy(top_local_logit, label.repeat_interleave(dim=0, repeats=7))
+
+                # 3. Total loss
+                loss = (kd_weight * L_kd +
+                        local_weight * L_local +
+                        mem_weight * loss_mem)
+                        
             optim.zero_grad()
             scaler.scale(loss).backward()
             scaler.step(optim)
@@ -577,9 +609,9 @@ class PromptKD_Refined(TrainerX):
             L_local = F.cross_entropy(top_local_logit, label.repeat_interleave(dim=0, repeats=7))
 
             # 3. Total loss
-            loss = (self.cfg.TRAINER.PROMPTKD.KD_WEIGHT * L_kd +
-                    self.cfg.TRAINER.PROMPTKD.LOCAL_WEIGHT * L_local +
-                    self.cfg.TRAINER.PROMPTKD.MEM_WEIGHT * loss_mem)
+            loss = (kd_weight * L_kd +
+                    local_weight * L_local +
+                    mem_weight * loss_mem)
 
             optim.zero_grad()
             loss.backward()
@@ -587,9 +619,9 @@ class PromptKD_Refined(TrainerX):
 
         loss_summary = {
             "loss": loss.item(),
-            "L_kd": L_kd.item() * self.cfg.TRAINER.PROMPTKD.KD_WEIGHT,
-            "L_local": L_local.item() * self.cfg.TRAINER.PROMPTKD.LOCAL_WEIGHT,
-            "L_mem": loss_mem.item() * self.cfg.TRAINER.PROMPTKD.MEM_WEIGHT,
+            "L_kd": L_kd.item() * kd_weight,
+            "L_local": L_local.item() * local_weight,
+            "L_mem": loss_mem.item() * mem_weight,
         }
 
         if (self.batch_idx + 1) == self.num_batches:
