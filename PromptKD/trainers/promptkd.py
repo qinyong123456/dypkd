@@ -221,10 +221,12 @@ class VLPromptLearner(nn.Module):
         suffix = self.token_suffix
         # print(f'suffix size is {suffix.size()}')
 
-        if self.trainer_name == "PromptKD" and self.train_modal == "base2novel":
+        if self.trainer_name == "PromptKD_Refined" and self.train_modal == "base2novel":
             # print(f'n_cls is {self.n_cls}')
             prefix = torch.cat([prefix, self.token_prefix2], dim=0)
             suffix = torch.cat([suffix, self.token_suffix2], dim=0)
+            # Expand ctx to match the concatenated prefix and suffix dimensions
+            ctx = ctx.repeat(2, 1, 1)
 
         prompts = self.construct_prompts(ctx, prefix, suffix)
 
