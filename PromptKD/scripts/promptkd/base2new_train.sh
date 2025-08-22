@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # custom config
-DATA="/kaggle/working/PromptKD/datasets/data"
+DATA="/kaggle/working/dypkd/PromptKD/datasets/data"
 TRAINER=PromptKD_Refined
 
 DATASET=$1 # 'imagenet' 'caltech101' 'dtd' 'eurosat' 'fgvc_aircraft' 'oxford_flowers' 'food101' 'oxford_pets' 'stanford_cars' 'sun397' 'ucf101'
