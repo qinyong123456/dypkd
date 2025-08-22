@@ -459,6 +459,9 @@ class PromptKD_Refined(TrainerX):
                              memory_size=memory_size, 
                              alpha=alpha)
         
+        # Add a transformation layer to convert image features (512) to text feature dimension (768)
+        self.image_to_text_proj = nn.Linear(512, teacher_feature_dim).to(self.device)
+        
         if cfg.TRAINER.MODAL == "base2novel":
             model_path = './teacher_model/'+str(cfg.DATASET.NAME)+'/VLPromptLearner/model-best.pth.tar'
         elif cfg.TRAINER.MODAL == "cross":
@@ -506,6 +509,10 @@ class PromptKD_Refined(TrainerX):
         for name, param in self.memory.named_parameters():
             if param.requires_grad:
                 enabled.add(name)
+        # Add image-to-text projection parameters
+        for name, param in self.image_to_text_proj.named_parameters():
+            if param.requires_grad:
+                enabled.add(f"image_to_text_proj.{name}")
                 
         print(f"Parameters to be updated: {enabled}")
         print(f"Parameters count: {len(enabled)}")
@@ -519,6 +526,7 @@ class PromptKD_Refined(TrainerX):
         self.trainable_list = nn.ModuleList([])
         self.trainable_list.append(self.model)
         self.trainable_list.append(self.memory)
+        self.trainable_list.append(self.image_to_text_proj)
 
         self.optim = build_optimizer(self.trainable_list, cfg.OPTIM)
         self.sched = build_lr_scheduler(self.optim, cfg.OPTIM)
@@ -561,8 +569,10 @@ class PromptKD_Refined(TrainerX):
                 image_features, logit_scale, image_fine_list, top_image_fine_list = model(image, label)
                 
                 # Use teacher's text features as the base for refinement
+                # Transform image features to match text feature dimension
+                image_fine_transformed = self.image_to_text_proj(image_fine_list.view(-1, 512)).view(image_fine_list.shape[0], image_fine_list.shape[1], -1)
                 refined_text_features, loss_mem = self.memory(text_token=tea_text_features, 
-                                                              image_token=image_fine_list, 
+                                                              image_token=image_fine_transformed, 
                                                               training=True)
 
                 # 1. Logits distillation loss (original PromptKD loss)
@@ -590,8 +600,10 @@ class PromptKD_Refined(TrainerX):
             image_features, logit_scale, image_fine_list, top_image_fine_list = model(image, label)
             
             # Use teacher's text features as the base for refinement
+            # Transform image features to match text feature dimension
+            image_fine_transformed = self.image_to_text_proj(image_fine_list.view(-1, 512)).view(image_fine_list.shape[0], image_fine_list.shape[1], -1)
             refined_text_features, loss_mem = self.memory(text_token=tea_text_features, 
-                                                          image_token=image_fine_list, 
+                                                          image_token=image_fine_transformed, 
                                                           training=True)
 
             # 1. Logits distillation loss (original PromptKD loss)
