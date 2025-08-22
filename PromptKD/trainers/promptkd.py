@@ -443,14 +443,15 @@ class PromptKD_Refined(TrainerX):
         print("Building custom CLIP")
         self.model = CustomCLIP(cfg, classnames, clip_model)
 
+        print("Building teacher model")
+        self.model_teacher = CustomCLIP_teacher(cfg, classnames, clip_model_teacher)
+
         print("Building Memory")
         # Note: The feature dimension for memory should match the teacher's text feature dimension
         teacher_feature_dim = self.model_teacher.text_encoder.text_projection.shape[1]
         self.memory = Memory(clip_model, feature_dim=teacher_feature_dim, 
                              memory_size=cfg.TRAINER.PROMPTKD.MEMORY_SIZE, 
                              alpha=cfg.TRAINER.PROMPTKD.ALPHA)
-
-        self.model_teacher = CustomCLIP_teacher(cfg, classnames, clip_model_teacher)
         
         if cfg.TRAINER.MODAL == "base2novel":
             model_path = './teacher_model/'+str(cfg.DATASET.NAME)+'/VLPromptLearner/model-best.pth.tar'
@@ -535,6 +536,7 @@ class PromptKD_Refined(TrainerX):
     
     def forward_backward(self, batch):
         image, label = self.parse_batch_train(batch)
+        prec = self.cfg.TRAINER.PROMPTKD.PREC
 
         with torch.no_grad():
             tea_image_features, tea_text_features, tea_logits = self.model_teacher(image)
